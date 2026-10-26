@@ -1,0 +1,17 @@
+name: Checks
+on: [push, pull_request]
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test Swift
+        run: swift test
+      - name: Test private offline analyzer
+        run: python3 -m unittest discover -s tests_python -v
+      - name: Build app bundle
+        run: bash scripts/build-app.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Ghost-Recorder-macOS
+          path: dist/*.zip

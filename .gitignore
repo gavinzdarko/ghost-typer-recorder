@@ -1,0 +1,16 @@
+.build/
+.swiftpm/
+dist/
+work/
+.DS_Store
+__pycache__/
+*.pyc
+# Personal captures and derived data must never be published.
+*.jsonl
+*.json
+*.sqlite*
+*.db
+.env
+.env.*
+Recordings/
+recordings/
