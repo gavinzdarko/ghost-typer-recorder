@@ -19,6 +19,8 @@ final class Capture {
     private var appID: String?
     private var appName: String?
     private var title: String?
+    private var contextPID: Int32?
+    private let titleSampler = ContextTitleSampler { pid in Capture.readWindowTitle(pid: pid) }
     private var secure = false
     private var epoch: UInt64 = 0
 
@@ -79,6 +81,8 @@ final class Capture {
     func stop(_ reason: String) {
         guard tap != nil else { return }
         boundary(reason)
+        titleSampler.invalidate()
+        appID = nil; appName = nil; title = nil; contextPID = nil
         contextTimer?.invalidate(); contextTimer = nil
         if let appObserver { NSWorkspace.shared.notificationCenter.removeObserver(appObserver) }
         appObserver = nil
@@ -118,36 +122,54 @@ final class Capture {
         }
     }
 
+    private func emitContext() {
+        record?(InputRecord(kind: "context", sessionID: sessionID,
+            appBundleID: appID, appName: appName, windowTitle: title,
+            details: "sampled_500ms; asynchronous window title may be unavailable; not document contents"))
+    }
+
     private func sampleContext() {
         checkSecureInput()
         let app = NSWorkspace.shared.frontmostApplication
         let newID = app?.bundleIdentifier
         let newName = app?.localizedName
-        var newTitle: String?
-        if includeTitles && !secure, let pid = app?.processIdentifier, AXIsProcessTrusted() {
-            let ax = AXUIElementCreateApplication(pid)
-            AXUIElementSetMessagingTimeout(ax, 0.02)
-            var window: CFTypeRef?
-            if AXUIElementCopyAttributeValue(ax, kAXFocusedWindowAttribute as CFString, &window) == .success,
-               let window, CFGetTypeID(window) == AXUIElementGetTypeID() {
-                var value: CFTypeRef?
-                if AXUIElementCopyAttributeValue(window as! AXUIElement, kAXTitleAttribute as CFString, &value) == .success {
-                    newTitle = value as? String
-                }
-            }
+        let pid = app?.processIdentifier
+        if contextPID != pid || appID != newID || appName != newName {
+            titleSampler.invalidate()
+            appID = newID; appName = newName; contextPID = pid; title = nil
+            emitContext()
         }
-        if appID != newID || appName != newName || title != newTitle {
-            appID = newID; appName = newName; title = newTitle
-            record?(InputRecord(kind: "context", sessionID: sessionID,
-                appBundleID: appID, appName: appName, windowTitle: title,
-                details: "sampled_500ms; window title may be unavailable; not document contents"))
+        guard includeTitles && !secure && AXIsProcessTrusted(), let pid else {
+            titleSampler.invalidate()
+            if title != nil { title = nil; emitContext() }
+            return
         }
+        titleSampler.sample(pid: pid) { [weak self] value in
+            guard let self, self.tap != nil, !self.secure, self.includeTitles,
+                  self.contextPID == pid else { return }
+            if self.title != value { self.title = value; self.emitContext() }
+        }
+    }
+
+    /// Runs only on the bounded sampler worker, never on the input run loop.
+    private static func readWindowTitle(pid: Int32) -> String? {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.02)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        let window = value as! AXUIElement
+        AXUIElementSetMessagingTimeout(window, 0.02)
+        var title: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title) == .success else { return nil }
+        return title as? String
     }
 
     private func checkSecureInput() {
         let now = IsSecureEventInputEnabled()
         if secure != now {
             secure = now
+            titleSampler.invalidate()
             title = nil
             boundary(now ? "secure_input_started" : "secure_input_ended")
             statusChanged?(now ? "Protected input — paused" : nil)

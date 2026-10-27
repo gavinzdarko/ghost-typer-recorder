@@ -1,0 +1,7 @@
+# Keep the owner's optional window context from delaying input
+
+References: Hammerspoon's [event tap](https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/eventtap/libeventtap.m) and ActivityWatch's [macOS window watcher](https://github.com/ActivityWatch/aw-watcher-window/blob/10638b2c94e46195f709abd8626cb15f911e99f8/aw_watcher_window/macos.swift), which separates observation from bounded delivery. Our original adaptation isolates slow AX title lookups from the input run loop; this is not a claim that either project uses this exact sampler.
+
+The menu, Gavin's title/text settings and 500 ms context cadence remain the same. App identity updates on the main thread; optional title reads run on one utility worker with one replaceable pending request. Tokens reject replies after a newer request, app/PID change, Stop or observed secure-input boundary. Both app and window AX messages have explicit 20 ms timeouts. A stuck app cannot grow an unbounded queue or block key/mouse ingestion. Unavailable context remains absent, not invented.
+
+Tests use synthetic blocked readers to prove caller responsiveness, a maximum of one worker plus one pending request, latest-only delivery, and invalidation even when a PID is reused. No Accessibility prompt, app scraping or live capture is performed by tests. Real AX notification/timing behavior remains owner-unverified. Context remains approximate and is not a committed-text transcript.
