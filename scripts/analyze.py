@@ -9,6 +9,7 @@ by their first event's wall time). Do not combine logs from different people.
 """
 
 import argparse
+import hashlib
 from collections import Counter, defaultdict
 import json
 import math
@@ -19,6 +20,63 @@ import sys
 
 INPUT_KINDS = frozenset(("key_down", "key_up", "flags_changed", "mouse_down",
                          "mouse_up", "mouse_move", "mouse_drag", "scroll"))
+
+
+class DisplayContext:
+    """Fingerprint existing synchronous display batches, never target coordinates."""
+    def __init__(self):
+        self.session = None
+        self.generation = 0
+        self.frames = {}
+        self.geometries = {}
+        self.blocked = False
+        self.key = "unknown"
+        self.invalid_records = 0
+
+    def restart(self, blocked=False):
+        self.generation += 1
+        self.frames = {}
+        self.blocked = blocked
+        self.key = f"unknown:{self.session}:{self.generation}"
+
+    def observe(self, event):
+        if event["session_id"] != self.session:
+            self.session = event["session_id"]
+            self.restart()
+        kind = event["kind"]
+        if kind == "data_loss":
+            # Lost records could include part of a new geometry batch.
+            self.restart(blocked=True)
+        elif kind == "boundary":
+            reason = event.get("details")
+            if isinstance(reason, str) and reason.startswith(("recording_started", "display_layout_changed")):
+                self.restart()
+            elif not self.frames:
+                self.restart(blocked=self.blocked)
+        elif kind == "display" and not self.blocked:
+            try:
+                details = event.get("details")
+                if not isinstance(details, str):
+                    raise ValueError("Missing display metadata")
+                fields = dict(part.split("=", 1) for part in details.split(";"))
+                display_id = fields["display_id"]
+                x, y = event.get("x"), event.get("y")
+                if not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                           and math.isfinite(v) for v in (x, y)):
+                    raise ValueError("Invalid origin")
+                dimensions = [float(fields[k]) for k in ("width", "height", "pixels_w", "pixels_h")]
+                if not display_id or not all(math.isfinite(v) and v > 0 for v in dimensions):
+                    raise ValueError("Invalid dimensions")
+                if event.get("coordinate_system", "quartz_global_points_top_left") != "quartz_global_points_top_left":
+                    raise ValueError("Unknown coordinate system")
+                self.frames[display_id] = [float(x) or 0.0, float(y) or 0.0, *dimensions]
+                geometry = sorted(self.frames.values())
+                encoded = json.dumps(geometry, separators=(",", ":"), allow_nan=False)
+                self.key = "geometry:" + hashlib.sha256(encoded.encode()).hexdigest()
+                self.geometries[self.key] = geometry
+            except (KeyError, TypeError, ValueError, OverflowError):
+                self.invalid_records += 1
+                self.restart(blocked=True)
 
 
 class Moments:
@@ -54,6 +112,8 @@ def analyze(events, cell_size=100):
     if cell_size <= 0:
         raise ValueError("cell_size must be positive")
     counts, quality = Counter(), Counter()
+    display = DisplayContext()
+    heatmap_by_layout = defaultdict(Counter)
     dwell, dd, ud, mouse_hold = Moments(), Moments(), Moments(), Moments()
     by_key, heatmap = defaultdict(Moments), Counter()
     held, mouse_held, last_down, previous_click = {}, {}, None, None
@@ -73,6 +133,7 @@ def analyze(events, cell_size=100):
     for event in events:
         if not isinstance(event, dict):
             quality["invalid_events"] += 1
+            display.restart(blocked=True)
             reset()
             continue
         timestamp = event.get("timestamp_ns")
@@ -81,16 +142,22 @@ def analyze(events, cell_size=100):
                 or not isinstance(timestamp, int)
                 or isinstance(timestamp, bool) or timestamp < 0):
             quality["invalid_events"] += 1
+            display.restart(blocked=True)
             reset()
             continue
         if not isinstance(event.get("session_id"), str) or not event["session_id"]:
             quality["invalid_events"] += 1
+            display.restart(blocked=True)
             reset()
             continue
         if event["session_id"] != session:
             reset()
             session, last_timestamp = event["session_id"], None
             quality["session_segments"] += 1
+        old_layout = display.key
+        display.observe(event)
+        if display.key != old_layout:
+            previous_click = None
         counts[kind] += 1
         if kind in ("boundary", "data_loss"):
             if kind == "data_loss":
@@ -166,21 +233,30 @@ def analyze(events, cell_size=100):
                 previous_click = None
                 continue
             heatmap[cell] += 1
+            heatmap_by_layout[display.key][cell] += 1
             if not isinstance(app, str) or not app:
                 quality["clicks_missing_app_context"] += 1
                 previous_click = None
                 continue
             previous_cell = previous_click[1] if previous_click and previous_click[0] == app else None
-            clicks.append({"app": app, "cell": cell, "previous_cell": previous_cell})
+            clicks.append({"app": app, "cell": cell, "previous_cell": previous_cell,
+                           "display_layout": display.key})
             previous_click = (app, cell)
     reset()
+    if display.invalid_records:
+        quality["invalid_display_records"] = display.invalid_records
     return {"schema_version": 1, "event_counts": dict(counts), "quality": dict(quality),
             "timing": {"key_hold": dwell.export(), "press_to_press": dd.export(),
                        "release_to_next_press_signed": ud.export(), "mouse_hold": mouse_hold.export()},
             "key_hold_by_code": {k: v.export() for k, v in sorted(by_key.items())},
-            "click_heatmap": {"cell_size_points": cell_size, "counts": dict(sorted(heatmap.items()))},
+            "click_heatmap": {"cell_size_points": cell_size, "counts": dict(sorted(heatmap.items())),
+                              "by_display_layout": {key: dict(value) for key, value in heatmap_by_layout.items()},
+                              "geometry_columns": ["x", "y", "width", "height", "pixels_w", "pixels_h"],
+                              "geometries": display.geometries},
             "notes": ["Timing uses uptime nanoseconds; display precision is not hardware accuracy.",
                       "Input timestamps are event occurrence times; metadata timestamps are receipt times and do not advance input chronology.",
+                      "Heatmap totals are descriptive; learning and per-layout maps separate display geometry.",
+                      "Unknown display metadata is isolated by session/segment rather than pooled with known geometry.",
                       "Negative release-to-next-press intervals mean overlapping keys.",
                       "Boundaries, invalid events, and session changes discard incomplete holds and reset sequences.",
                       "Observed app changes reset previous-click context, including changes on non-click events.",
@@ -192,28 +268,43 @@ def fit(clicks, cell_size=100, min_support=5):
     for click in clicks:
         app, previous, target = click["app"], click["previous_cell"], click["cell"]
         # JSON null is reserved as the start/changed-app context.
-        context = json.dumps([app, previous], separators=(",", ":"))
+        layout = click.get("display_layout", "legacy_unknown")
+        context = json.dumps([app, layout, previous], separators=(",", ":"))
+        popularity_context = json.dumps([app, layout], separators=(",", ":"))
         transitions.setdefault(context, Counter())[target] += 1
-        popularity.setdefault(app, Counter())[target] += 1
-    return {"schema_version": 1, "model_type": "personal_app_previous_cell_counts",
+        popularity.setdefault(popularity_context, Counter())[target] += 1
+    return {"schema_version": 2, "model_type": "personal_app_layout_previous_cell_counts",
             "cell_size_points": cell_size, "min_support": min_support,
             "training_clicks": len(clicks),
             "transitions": {k: dict(v) for k, v in transitions.items()},
             "app_popularity": {k: dict(v) for k, v in popularity.items()},
             "limitations": ["Predicts coarse absolute screen cells, not semantic controls or text.",
-                            "Assumes unchanged display layout; do not mix changed resolutions/layouts.",
+                            "Counts are partitioned by observed display geometry; unknown metadata is session/segment scoped.",
+                            "Window movement and semantic target changes within a layout are still unmodeled.",
                             "Counts are empirical frequencies, not calibrated confidence.",
                             "No live cursor forecast and no autonomous clicking."]}
 
 
-def predict(model, app, previous_cell=None, top_k=3, baseline=False):
+def predict(model, app, previous_cell=None, top_k=3, baseline=False, display_layout=None):
     if top_k < 1:
         raise ValueError("top_k must be positive")
-    if baseline:
-        counts = model["app_popularity"].get(app, {})
+    if model.get("schema_version", 1) >= 2:
+        layout = display_layout if display_layout is not None else "legacy_unknown"
+        if baseline:
+            context = json.dumps([app, layout], separators=(",", ":"))
+            counts = model["app_popularity"].get(context, {})
+        else:
+            context = json.dumps([app, layout, previous_cell], separators=(",", ":"))
+            counts = model["transitions"].get(context, {})
     else:
-        context = json.dumps([app, previous_cell], separators=(",", ":"))
-        counts = model["transitions"].get(context, {})
+        # Legacy models have no geometry evidence; never assert a match to a supplied layout.
+        if display_layout is not None:
+            return {"abstained": True, "support": 0, "candidates": []}
+        if baseline:
+            counts = model["app_popularity"].get(app, {})
+        else:
+            context = json.dumps([app, previous_cell], separators=(",", ":"))
+            counts = model["transitions"].get(context, {})
     support = sum(counts.values())
     if support < model["min_support"]:
         return {"abstained": True, "support": support, "candidates": []}
@@ -233,7 +324,8 @@ def evaluate(clicks, cell_size=100, min_support=5, train_fraction=0.8):
     for name, baseline in (("transition_model", False), ("app_popularity_baseline", True)):
         covered = top1 = top3 = 0
         for click in clicks[split:]:
-            result = predict(model, click["app"], click["previous_cell"], baseline=baseline)
+            result = predict(model, click["app"], click["previous_cell"], baseline=baseline,
+                             display_layout=click.get("display_layout"))
             candidates = [candidate["cell"] for candidate in result["candidates"]]
             covered += not result["abstained"]
             top1 += bool(candidates) and candidates[0] == click["cell"]
