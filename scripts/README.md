@@ -16,7 +16,7 @@ python3 scripts/analyze.py \
 Use the actual capture directory shown in the app if it differs. Directories are
 searched for `*.jsonl` recursively in first-event UTC wall-time order; explicit file arguments are
 processed in argument order. Preserve chronological capture order and analyze
-one person, one stable display layout at a time. Input timestamps come from
+one person at a time. Display geometry is automatically partitioned when present; missing or corrupt geometry is isolated by session/segment. Input timestamps come from
 CGEvent occurrence time; context/display/boundary metadata uses callback receipt
 time. A new context record can therefore have a newer timestamp than a queued
 input delivered immediately afterward. Metadata does not advance the analyzer's
@@ -38,11 +38,11 @@ in `quality`. Statistics are streaming population mean/stddev/min/max, not
 percentiles. No raw typed text or window titles are copied into analysis output.
 The timing unit does not imply nanosecond hardware accuracy.
 
-The optional model learns app + previous click cell → next click cell counts,
+The optional model learns app + display geometry + previous click cell → next click cell counts,
 using 100-point absolute spatial cells by default. It is a personal baseline,
 not a complete next-action model or text model. `--cell-size` changes the grid;
 `--min-support` controls abstention (default five matching historical examples).
-App context must have been enabled during capture to train click predictions.
+App context must have been enabled during capture to train click predictions. New schema-2 models condition both transitions and the popularity baseline on geometry. `predict(..., display_layout=...)` abstains for unseen layouts; a missing argument cannot borrow known-layout counts.
 The first click after a boundary/app change uses a distinct start context.
 App switches observed on keyboard or context events also break click continuity,
 including switching away and back without clicking in the other app. A context
@@ -60,7 +60,7 @@ not be mistaken for the held-out evaluation model.
 
 No live predictions, automatic clicks, screenshot collection, language model,
 or cross-app semantic target recognition are implemented here. Absolute cells
-change meaning when windows move or displays change. Research and the path
+change meaning when windows move; recorded display geometry prevents pooling across changed displays, while semantic window movement remains unmodeled. Research and the path
 toward richer action labels are recorded in `docs/EVIDENCE.md`.
 
 Run meaningful synthetic checks with:
