@@ -49,10 +49,13 @@ def cell_for(event, cell_size):
     return f"{math.floor(x / cell_size)},{math.floor(y / cell_size)}"
 
 
-def analyze(events, cell_size=100):
+def analyze(events, cell_size=100, excluded_source_pids=()):
     """Stream input; memory scales with key codes, heatmap cells, and click count."""
     if cell_size <= 0:
         raise ValueError("cell_size must be positive")
+    excluded_source_pids = frozenset(excluded_source_pids)
+    if any(not isinstance(pid, int) or isinstance(pid, bool) or pid < 1 for pid in excluded_source_pids):
+        raise ValueError("Excluded source PIDs must be positive integers")
     counts, quality = Counter(), Counter()
     dwell, dd, ud, mouse_hold = Moments(), Moments(), Moments(), Moments()
     by_key, heatmap = defaultdict(Moments), Counter()
@@ -103,6 +106,12 @@ def analyze(events, cell_size=100):
             if last_timestamp is not None and timestamp < last_timestamp:
                 raise ValueError("Input events are out of chronological order within a session segment")
             last_timestamp = timestamp
+        source_pid = event.get("source_pid")
+        if (kind in INPUT_KINDS and isinstance(source_pid, int) and not isinstance(source_pid, bool)
+                and source_pid in excluded_source_pids):
+            quality["excluded_source_events"] += 1
+            reset()
+            continue
         app = event.get("app_bundle_id")
         if isinstance(app, str) and app:
             if app != current_app:
@@ -175,6 +184,7 @@ def analyze(events, cell_size=100):
             previous_click = (app, cell)
     reset()
     return {"schema_version": 1, "event_counts": dict(counts), "quality": dict(quality),
+            "selection": {"excluded_source_pids": sorted(excluded_source_pids)},
             "timing": {"key_hold": dwell.export(), "press_to_press": dd.export(),
                        "release_to_next_press_signed": ud.export(), "mouse_hold": mouse_hold.export()},
             "key_hold_by_code": {k: v.export() for k, v in sorted(by_key.items())},
@@ -293,9 +303,13 @@ def main(argv=None):
     parser.add_argument("--cell-size", type=int, default=100, help="Absolute screen point grid size (default 100)")
     parser.add_argument("--min-support", type=int, default=5, help="Minimum historical context examples before predicting")
     parser.add_argument("--train-fraction", type=float, default=0.8)
+    parser.add_argument("--exclude-source-pid", type=int, action="append", default=[],
+                        help="Exclude an owner-selected source PID from analysis; repeatable, raw captures stay intact")
     args = parser.parse_args(argv)
     if args.cell_size <= 0 or args.min_support < 1 or not 0 < args.train_fraction < 1:
         parser.error("Require positive cell size/support and 0 < train fraction < 1")
+    if any(pid < 1 for pid in args.exclude_source_pid):
+        parser.error("Excluded source PIDs must be positive")
     repo = Path(__file__).resolve().parents[1]
     outputs = [args.summary] + ([args.model] if args.model else [])
     for output in outputs:
@@ -314,11 +328,13 @@ def main(argv=None):
             parser.error("No JSONL input files found")
         if len({path.resolve() for path in paths}) != len(paths):
             parser.error("Duplicate input files would double count data")
-        summary, clicks = analyze(read_events(paths), args.cell_size)
+        summary, clicks = analyze(read_events(paths), args.cell_size, args.exclude_source_pid)
         summary["prediction_evaluation"] = evaluate(clicks, args.cell_size, args.min_support, args.train_fraction)
         write_private_json(args.summary, summary)
         if args.model:
-            write_private_json(args.model, fit(clicks, args.cell_size, args.min_support))
+            model = fit(clicks, args.cell_size, args.min_support)
+            model["selection"] = summary["selection"]
+            write_private_json(args.model, model)
     except (OSError, ValueError) as error:
         print(f"Analysis failed: {error}", file=sys.stderr)
         return 1
