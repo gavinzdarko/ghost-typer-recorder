@@ -1,0 +1,7 @@
+# Keep Gavin's chosen automation out of his training sample
+
+Hammerspoon exposes native source-PID metadata ([pinned source](https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/eventtap/libeventtap_event.m)). TinyTask separates recorder controls from macro content ([pinned recorder](https://github.com/Aaru1801/TinyTask-macOS/blob/8ccf3b4d19db88af5f0f01db7205f128fc116c0a/Sources/TinyRecorder/Recorder.swift)). ActivityWatch's [input watcher](https://github.com/ActivityWatch/aw-watcher-input/blob/4e6461dbf55a1c1aa8f9ece4df5f109188f56f61/src/aw_watcher_input/main.py) reinforces deriving summaries separately from the source stream. Our adaptation is an explicit analysis selection, not a copied algorithm.
+
+`--exclude-source-pid 123 --exclude-source-pid 456` excludes only the software PIDs Gavin chooses from timing/model training. Default analysis still includes all input. Each excluded event breaks continuity, so no hold or click transition spans excluded activity. Summary/model save the selection for reproducibility; original captures are never rewritten. Existing event counts remain counts of valid observed events; `quality.excluded_source_events` reports how many were excluded from derived features.
+
+PIDs can be reused or absent/spoofed. Apply exclusions only to sessions where the chosen PID is known to represent automation; this is not proof of physical input or a blanket Ghost Typer detector. Reports/models remain private. The ON/OFF menu and raw collection are unchanged.
