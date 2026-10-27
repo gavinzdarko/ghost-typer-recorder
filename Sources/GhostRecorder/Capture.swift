@@ -14,6 +14,8 @@ final class Capture {
     private var source: CFRunLoopSource?
     private var contextTimer: Timer?
     private var appObserver: NSObjectProtocol?
+    private var inputSourceObserver: NSObjectProtocol?
+    private var inputSource = KeyboardInputSource(id: nil, name: nil)
     private var appID: String?
     private var appName: String?
     private var title: String?
@@ -49,6 +51,7 @@ final class Capture {
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: port, enable: true)
         secure = IsSecureEventInputEnabled()
+        refreshInputSource(markChange: false)
         sampleContext()
         boundary("recording_started; secure_input=\(secure); text=\(includeText); titles=\(includeTitles)")
         recordDisplays()
@@ -58,6 +61,19 @@ final class Capture {
         if let contextTimer { RunLoop.main.add(contextTimer, forMode: .common) }
         appObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
             object: nil, queue: .main) { [weak self] _ in self?.sampleContext() }
+        inputSourceObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
+            object: nil, queue: .main) { [weak self] _ in self?.refreshInputSource(markChange: true) }
+    }
+
+    private func refreshInputSource(markChange: Bool) {
+        let next = KeyboardInputSource.current()
+        guard !markChange || next != inputSource else { return }
+        if markChange { boundary("keyboard_input_source_changed") }
+        inputSource = next
+        record?(InputRecord(kind: "keyboard_layout", sessionID: sessionID,
+            details: "Selected input source; event text remains distinct from committed IME text.",
+            inputSourceID: next.id, inputSourceName: next.name))
     }
 
     func stop(_ reason: String) {
@@ -66,6 +82,8 @@ final class Capture {
         contextTimer?.invalidate(); contextTimer = nil
         if let appObserver { NSWorkspace.shared.notificationCenter.removeObserver(appObserver) }
         appObserver = nil
+        if let inputSourceObserver { DistributedNotificationCenter.default().removeObserver(inputSourceObserver) }
+        inputSourceObserver = nil
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
         source = nil; tap = nil
@@ -154,6 +172,7 @@ final class Capture {
             item.kind = type == .keyDown ? "key_down" : (type == .keyUp ? "key_up" : "flags_changed")
             item.keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
             item.isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+            item.inputSourceID = inputSource.id; item.inputSourceName = inputSource.name
             item.keyboardType = Int(event.getIntegerValueField(.keyboardEventKeyboardType))
             if type == .keyDown && includeText {
                 var chars = [UniChar](repeating: 0, count: 64)

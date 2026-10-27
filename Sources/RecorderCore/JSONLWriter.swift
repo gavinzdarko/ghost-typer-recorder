@@ -133,6 +133,7 @@ public final class JSONLWriter: @unchecked Sendable {
         anchor.pressure = nil; anchor.clickCount = nil
         anchor.deltaX = nil; anchor.deltaY = nil
         anchor.sourcePID = nil; anchor.keyboardType = nil
+        anchor.inputSourceID = nil; anchor.inputSourceName = nil
         anchor.details = "Writer queue overflow; treat held keys/buttons and intervals across this boundary as unknown."
         anchor.droppedRecordCount = pendingDrops
         pending.append(anchor)

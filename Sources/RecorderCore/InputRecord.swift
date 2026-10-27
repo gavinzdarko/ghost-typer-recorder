@@ -41,6 +41,8 @@ public struct InputRecord: Codable, Sendable, Equatable {
     public var deltaY: Double?
     public var sourcePID: Int?
     public var keyboardType: Int?
+    public var inputSourceID: String?
+    public var inputSourceName: String?
     public var appBundleID: String?
     public var appName: String?
     public var windowTitle: String?
@@ -60,7 +62,8 @@ public struct InputRecord: Codable, Sendable, Equatable {
         sourcePID: Int? = nil, keyboardType: Int? = nil,
         appBundleID: String? = nil, appName: String? = nil, windowTitle: String? = nil,
         details: String? = nil, coordinateSystem: String? = nil,
-        droppedRecordCount: UInt64? = nil
+        droppedRecordCount: UInt64? = nil, inputSourceID: String? = nil,
+        inputSourceName: String? = nil
     ) {
         self.kind = kind
         self.timestampNS = timestampNS
@@ -81,6 +84,8 @@ public struct InputRecord: Codable, Sendable, Equatable {
         self.deltaY = deltaY
         self.sourcePID = sourcePID
         self.keyboardType = keyboardType
+        self.inputSourceID = inputSourceID
+        self.inputSourceName = inputSourceName
         self.appBundleID = appBundleID
         self.appName = appName
         self.windowTitle = windowTitle
@@ -100,6 +105,7 @@ public struct InputRecord: Codable, Sendable, Equatable {
         case scrollX = "scroll_x", scrollY = "scroll_y"
         case pressure, clickCount = "click_count", deltaX = "delta_x", deltaY = "delta_y"
         case sourcePID = "source_pid", keyboardType = "keyboard_type"
+        case inputSourceID = "input_source_id", inputSourceName = "input_source_name"
         case appBundleID = "app_bundle_id", appName = "app_name", windowTitle = "window_title"
         case details, coordinateSystem = "coordinate_system", droppedRecordCount = "dropped_record_count"
     }

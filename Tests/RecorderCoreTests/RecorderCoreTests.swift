@@ -149,6 +149,18 @@ final class RecorderCoreTests: XCTestCase {
         stop(writer)
     }
 
+    func testPersonalInputSourceSurvivesRoundTripAndLegacyRecordsRemainReadable() throws {
+        let recorded = InputRecord(kind: "key_down", sessionID: "personal-session", keyCode: 12,
+            inputSourceID: "com.apple.keylayout.Dvorak", inputSourceName: "Dvorak")
+        let data = try JSONEncoder().encode(recorded)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(json["input_source_id"] as? String, "com.apple.keylayout.Dvorak")
+        XCTAssertEqual(try JSONDecoder().decode(InputRecord.self, from: data), recorded)
+        let legacy = InputRecord(kind: "key_up", sessionID: "older-session", keyCode: 12)
+        let legacyData = try JSONEncoder().encode(legacy)
+        XCTAssertNil(try JSONDecoder().decode(InputRecord.self, from: legacyData).inputSourceID)
+    }
+
     func testUTCFormattingIsStableAcrossConcurrentCalls() {
         let date = Date(timeIntervalSince1970: 0.125)
         DispatchQueue.concurrentPerform(iterations: 1000) { _ in
