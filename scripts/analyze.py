@@ -51,8 +51,12 @@ class DisplayContext:
             reason = event.get("details")
             if isinstance(reason, str) and reason.startswith(("recording_started", "display_layout_changed")):
                 self.restart()
-            elif not self.frames:
-                self.restart(blocked=self.blocked)
+            elif isinstance(reason, str) and reason.startswith("secure_input_"):
+                if not self.frames:
+                    self.restart(blocked=self.blocked)
+            else:
+                # Interrupted tails and disabled taps can hide geometry metadata.
+                self.restart(blocked=True)
         elif kind == "display" and not self.blocked:
             try:
                 details = event.get("details")

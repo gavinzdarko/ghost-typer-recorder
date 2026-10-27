@@ -67,6 +67,11 @@ class PersonalDisplayContextTests(unittest.TestCase):
         _, clicks = analyze.analyze(events)
         self.assertTrue(clicks[0]["display_layout"].startswith("unknown:"))
 
+    def test_unclassified_loss_boundary_does_not_preserve_known_geometry(self):
+        for reason in ("recovered_unterminated_tail", "tap_disabled_detected", None):
+            _, clicks = analyze.analyze([screen(0), event("boundary", 1, details=reason)] + click(2))
+            self.assertTrue(clicks[0]["display_layout"].startswith("unknown:"))
+
     def test_holdout_cannot_borrow_other_layouts_popularity(self):
         clicks = [{"app": "app", "previous_cell": None, "cell": "0,0", "display_layout": "laptop"}] * 8
         clicks += [{"app": "app", "previous_cell": None, "cell": "0,0", "display_layout": "external"}] * 2
