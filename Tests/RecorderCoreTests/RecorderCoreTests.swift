@@ -161,6 +161,76 @@ final class RecorderCoreTests: XCTestCase {
         XCTAssertNil(try JSONDecoder().decode(InputRecord.self, from: legacyData).inputSourceID)
     }
 
+    func testOFFFlushesEveryBufferedRecordAndReopenCannotOverwriteOldSession() throws {
+        let writer = try JSONLWriter(configuration: .init(directory: directory, flushInterval: 30))
+        for index in 0..<5000 {
+            XCTAssertTrue(writer.enqueue(InputRecord(kind: "diagnostic", timestampNS: UInt64(index), sessionID: "first")))
+        }
+        XCTAssertTrue(writer.enqueue(InputRecord(kind: "boundary", timestampNS: 5000, sessionID: "first", details: "recording_stopped")))
+        stop(writer)
+        let oldFile = try XCTUnwrap(writer.snapshot().currentFile)
+        let saved = try Data(contentsOf: oldFile)
+        XCTAssertEqual(try records().count, 5001)
+        XCTAssertEqual(writer.snapshot().writtenRecords, writer.snapshot().acceptedRecords)
+        XCTAssertEqual(writer.snapshot().pendingRecords, 0)
+        XCTAssertFalse(writer.enqueue(InputRecord(kind: "key_down", sessionID: "after-OFF")))
+        let reopened = try JSONLWriter(configuration: .init(directory: directory))
+        reopened.enqueue(InputRecord(kind: "boundary", sessionID: "second", details: "recording_started"))
+        stop(reopened)
+        XCTAssertNotEqual(oldFile, reopened.snapshot().currentFile)
+        XCTAssertEqual(try Data(contentsOf: oldFile), saved)
+        XCTAssertEqual(try records().count, 5002)
+    }
+
+    func testSleepCheckpointPersistsBufferedBoundaryAndWriterCanResume() throws {
+        let writer = try JSONLWriter(configuration: .init(directory: directory, flushInterval: 30))
+        writer.enqueue(InputRecord(kind: "key_down", timestampNS: 1, sessionID: "sleep", keyCode: 0))
+        writer.enqueue(InputRecord(kind: "boundary", timestampNS: 2, sessionID: "sleep", details: "sleep_or_session_inactive"))
+        XCTAssertTrue(writer.checkpoint(timeout: 2))
+        XCTAssertEqual(try records().map(\.kind), ["key_down", "boundary"])
+        XCTAssertEqual(writer.snapshot().state, "running")
+        writer.enqueue(InputRecord(kind: "boundary", timestampNS: 3, sessionID: "sleep", details: "recording_started"))
+        writer.enqueue(InputRecord(kind: "key_up", timestampNS: 4, sessionID: "sleep", keyCode: 0))
+        stop(writer)
+        XCTAssertEqual(try records().map(\.timestampNS), [1, 2, 3, 4])
+        XCTAssertFalse(writer.checkpoint(timeout: .nan))
+    }
+
+    func testEncodingFailureCannotReportACompletedSave() throws {
+        let writer = try JSONLWriter(configuration: .init(directory: directory, flushInterval: 30))
+        writer.enqueue(InputRecord(kind: "mouse_down", sessionID: "invalid", pressure: .nan))
+        stop(writer)
+        XCTAssertEqual(writer.snapshot().state, "failed")
+        XCTAssertNotNil(writer.snapshot().lastError)
+        XCTAssertFalse(writer.checkpoint(timeout: 1))
+        XCTAssertFalse(writer.enqueue(InputRecord(kind: "late", sessionID: "invalid")))
+    }
+
+    func testUTCMidnightRotationPreservesBothDays() throws {
+        let writer = try JSONLWriter(configuration: .init(directory: directory, flushInterval: 30))
+        let midnight = Date(timeIntervalSince1970: 1_700_006_400)
+        writer.enqueue(InputRecord(kind: "key_down", timestampNS: 1, wallTime: midnight.addingTimeInterval(-1), sessionID: "midnight", keyCode: 0))
+        writer.enqueue(InputRecord(kind: "key_up", timestampNS: 2, wallTime: midnight.addingTimeInterval(1), sessionID: "midnight", keyCode: 0))
+        stop(writer)
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        XCTAssertEqual(files.count, 2)
+        XCTAssertEqual(try records().map(\.timestampNS), [1, 2])
+    }
+
+    func testSustainedSyntheticStreamSurvivesRepeatedCheckpointsWithoutLoss() throws {
+        let writer = try JSONLWriter(configuration: .init(directory: directory))
+        for batch in 0..<40 {
+            for index in 0..<500 {
+                XCTAssertTrue(writer.enqueue(InputRecord(kind: "diagnostic", timestampNS: UInt64(batch * 500 + index), sessionID: "synthetic-load")))
+            }
+            XCTAssertTrue(writer.checkpoint(timeout: 5))
+        }
+        stop(writer)
+        XCTAssertEqual(writer.snapshot().writtenRecords, 20_000)
+        XCTAssertEqual(writer.snapshot().droppedRecords, 0)
+        XCTAssertEqual(try records().map(\.timestampNS), Array(0..<20_000).map(UInt64.init))
+    }
+
     func testUTCFormattingIsStableAcrossConcurrentCalls() {
         let date = Date(timeIntervalSince1970: 0.125)
         DispatchQueue.concurrentPerform(iterations: 1000) { _ in

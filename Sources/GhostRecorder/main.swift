@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var finishing = false
     private var quitAfterFinish = false
     private var fault: String?
+    private var lastSaveSummary: String?
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
     private var instanceLock: Int32 = -1
@@ -100,7 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         status.button?.contentTintColor = active ? .systemRed : .secondaryLabelColor
         status.button?.title = active ? " REC" : (armed ? " PAUSED" : " OFF")
         status.button?.toolTip = "Ghost Recorder — \(active ? "recording locally" : "not collecting input")"
-        stateItem.title = fault ?? (finishing ? "Saving…" : (armed ? (suspended ? "Paused — screen inactive / asleep" : (secure ? "Paused — protected input" : "Recording • \(snapshot?.writtenRecords ?? 0) events • \(snapshot?.droppedRecords ?? 0) dropped")) : "Off — no input collected"))
+        stateItem.title = fault ?? (finishing ? "Saving…" : (armed ? (suspended ? "Paused — screen inactive / asleep" : (secure ? "Paused — protected input" : "Recording • \(snapshot?.writtenRecords ?? 0) events • \(snapshot?.droppedRecords ?? 0) dropped")) : (lastSaveSummary ?? "Off — no input collected")))
         toggleItem.title = armed ? "Turn Recording OFF" : "Turn Recording ON"
         toggleItem.isEnabled = !finishing
         for item in menu.items {
@@ -127,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         do {
             fault = nil
+            lastSaveSummary = nil
             writer = try JSONLWriter()
             capture.sessionID = UUID().uuidString
             capture.includeText = textEnabled; capture.includeTitles = titlesEnabled
@@ -148,7 +150,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let closing = writer
         closing?.finish { [weak self] in
             guard let self else { return }
-            if let error = closing?.snapshot().lastError { self.fault = "Save failed: \(error)" }
+            let saved = closing?.snapshot()
+            if let error = saved?.lastError { self.fault = "Save failed: \(error)" }
+            else { self.lastSaveSummary = "OFF • saved \(saved?.writtenRecords ?? 0) events to disk" }
             self.writer = nil; self.finishing = false; self.refresh()
             if self.quitAfterFinish { DispatchQueue.main.async { NSApp.reply(toApplicationShouldTerminate: true) } }
         }
@@ -158,6 +162,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard armed && !suspended else { return }
         suspended = true
         capture.stop("sleep_or_session_inactive")
+        if let writer, !writer.checkpoint() {
+            // Do not hold the OS sleep path indefinitely on a slow/full disk.
+            writer.enqueue(InputRecord(kind: "boundary", sessionID: capture.sessionID,
+                details: "sleep_checkpoint_incomplete; data may remain buffered until wake"))
+        }
         refresh()
     }
     private func resume() {

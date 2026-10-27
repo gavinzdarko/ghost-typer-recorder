@@ -15,3 +15,11 @@ jobs:
         with:
           name: Ghost-Recorder-macOS
           path: dist/*.zip
+
+  thread-sanitizer:
+    if: github.ref_name == 'verify/pre-live-20261027'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test concurrency with ThreadSanitizer on a separate OS runtime
+        run: swift test --sanitize=thread

@@ -105,6 +105,20 @@ public final class JSONLWriter: @unchecked Sendable {
                         lastError: errorMessage, currentFile: visibleFile)
     }
 
+    /// Best-effort sleep checkpoint after input is paused. The wait is bounded;
+    /// false means the caller must not claim everything was saved before sleep.
+    public func checkpoint(timeout: TimeInterval = 0.5) -> Bool {
+        guard timeout.isFinite && timeout >= 0 else { return false }
+        let done = DispatchSemaphore(value: 0)
+        queue.async { [self] in
+            drain()
+            do { try handle?.synchronize() } catch { fail(error) }
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + timeout) == .success else { return false }
+        return snapshot().lastError == nil
+    }
+
     /// Disallows new events immediately. Completion runs on main after all accepted
     /// events and any loss marker have been flushed, or an error has been recorded.
     public func finish(completion: @escaping @Sendable () -> Void = {}) {

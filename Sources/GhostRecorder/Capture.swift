@@ -22,10 +22,9 @@ final class Capture {
     private var contextPID: Int32?
     private let titleSampler = ContextTitleSampler { pid in Capture.readWindowTitle(pid: pid) }
     private var secure = false
-    private var epoch: UInt64 = 0
+    private var inputGate = CaptureInputGate()
 
     func start() throws {
-        epoch = DispatchTime.now().uptimeNanoseconds
         guard CGPreflightListenEventAccess() else {
             CGRequestListenEventAccess()
             throw NSError(domain: "GhostRecorder", code: 1, userInfo: [NSLocalizedDescriptionKey:
@@ -52,6 +51,11 @@ final class Capture {
         source = runSource
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: port, enable: true)
+        inputGate.start(at: DispatchTime.now().uptimeNanoseconds)
+        guard CGEvent.tapIsEnabled(tap: port) else {
+            stop("listener_start_failed")
+            throw NSError(domain: "GhostRecorder", code: 4, userInfo: [NSLocalizedDescriptionKey: "macOS did not enable the input listener."])
+        }
         secure = IsSecureEventInputEnabled()
         refreshInputSource(markChange: false)
         sampleContext()
@@ -81,6 +85,7 @@ final class Capture {
     func stop(_ reason: String) {
         guard tap != nil else { return }
         boundary(reason)
+        inputGate.stop()
         titleSampler.invalidate()
         appID = nil; appName = nil; title = nil; contextPID = nil
         contextTimer?.invalidate(); contextTimer = nil
@@ -94,7 +99,7 @@ final class Capture {
     }
 
     func boundary(_ reason: String) {
-        epoch = DispatchTime.now().uptimeNanoseconds
+        inputGate.boundary(at: DispatchTime.now().uptimeNanoseconds)
         record?(InputRecord(kind: "boundary", sessionID: sessionID, details: reason))
     }
 
@@ -183,48 +188,14 @@ final class Capture {
             return
         }
         checkSecureInput()
-        guard !secure else { return }
-        guard event.timestamp >= epoch else { return } // queued input from before a gap
+        guard inputGate.accepts(timestamp: event.timestamp, secureInputEnabled: secure) else { return }
         // App metadata is sampled and refreshed on activation; never query AX here.
         var item = InputRecord(kind: "", timestampNS: event.timestamp, sessionID: sessionID,
             flags: event.flags.rawValue, sourcePID: Int(event.getIntegerValueField(.eventSourceUnixProcessID)),
             appBundleID: appID, appName: appName, windowTitle: title)
-        switch type {
-        case .keyDown, .keyUp, .flagsChanged:
-            item.kind = type == .keyDown ? "key_down" : (type == .keyUp ? "key_up" : "flags_changed")
-            item.keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-            item.isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-            item.inputSourceID = inputSource.id; item.inputSourceName = inputSource.name
-            item.keyboardType = Int(event.getIntegerValueField(.keyboardEventKeyboardType))
-            if type == .keyDown && includeText {
-                var chars = [UniChar](repeating: 0, count: 64)
-                var length = 0
-                event.keyboardGetUnicodeString(maxStringLength: chars.count, actualStringLength: &length, unicodeString: &chars)
-                if length > 0 { item.text = String(utf16CodeUnits: chars, count: min(length, chars.count)) }
-            }
-        case .leftMouseDown, .rightMouseDown, .otherMouseDown: item.kind = "mouse_down"
-        case .leftMouseUp, .rightMouseUp, .otherMouseUp: item.kind = "mouse_up"
-        case .mouseMoved: item.kind = "mouse_move"
-        case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged: item.kind = "mouse_drag"
-        case .scrollWheel:
-            item.kind = "scroll"
-            item.scrollX = event.getDoubleValueField(.scrollWheelEventPointDeltaAxis2)
-            item.scrollY = event.getDoubleValueField(.scrollWheelEventPointDeltaAxis1)
-        default: return
+        item.inputSourceID = inputSource.id; item.inputSourceName = inputSource.name
+        if let decoded = NativeEventDecoder.decode(type, event: event, metadata: item, includeText: includeText) {
+            record?(decoded)
         }
-        if item.kind.hasPrefix("mouse") || item.kind == "scroll" {
-            item.x = event.location.x; item.y = event.location.y
-            item.coordinateSystem = "quartz_global_points_top_left"
-            if item.kind.hasPrefix("mouse") {
-                item.deltaX = event.getDoubleValueField(.mouseEventDeltaX)
-                item.deltaY = event.getDoubleValueField(.mouseEventDeltaY)
-                item.pressure = event.getDoubleValueField(.mouseEventPressure)
-                item.clickCount = Int(event.getIntegerValueField(.mouseEventClickState))
-            }
-            if item.kind != "mouse_move" && item.kind != "scroll" {
-                item.button = Int(event.getIntegerValueField(.mouseEventButtonNumber))
-            }
-        }
-        record?(item)
     }
 }
