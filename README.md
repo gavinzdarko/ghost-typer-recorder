@@ -4,6 +4,8 @@ A separate, native macOS menu bar data collector for [Ghost Typer](https://githu
 
 This is a personal dataset recorder plus an offline next-click baseline. It does **not** yet predict arbitrary UI controls, understand complete documents, or drive Ghost Typer. The existing Ghost Typer repository and its Forge automation are untouched.
 
+Current tested preview: **0.1.1, build 2** ([download the Apple Silicon build](https://github.com/gavinzdarko/ghost-typer-recorder/releases/tag/v0.1.1)). The release uses the same app executable as the owner's installed preview. See [version and verification details](docs/CURRENT_VERSION.md).
+
 ## Build and open
 
 Requires macOS 13 or newer and the Swift command line tools. Build on the machine/architecture where you will run it:

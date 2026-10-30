@@ -1,3 +1,4 @@
+import CoreGraphics
 import CryptoKit
 import Foundation
 import RecorderCore
@@ -24,8 +25,24 @@ import RecorderCore
                         keyCode: key, x: button == nil ? nil : 100, y: button == nil ? nil : 200,
                         button: button, appBundleID: "synthetic.preflight", details: detail)
         }
+        func nativeText(_ text: String, _ ms: UInt64, key: UInt16) throws -> InputRecord {
+            guard let event = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true) else {
+                throw NSError(domain: "StorageProbe", code: 4)
+            }
+            let chars = Array(text.utf16)
+            chars.withUnsafeBufferPointer {
+                event.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: $0.baseAddress)
+            }
+            event.timestamp = ms * 1_000_000
+            guard let decoded = NativeEventDecoder.decode(.keyDown, event: event,
+                metadata: row("key_down", ms, key: key), includeText: true) else {
+                throw NSError(domain: "StorageProbe", code: 5)
+            }
+            try require(decoded.text == text, "Native synthetic text did not match")
+            return decoded
+        }
         let rows = [row("boundary", 0, detail: "recording_started;synthetic_only"),
-                    row("key_down", 1000, key: 0), row("key_down", 1050, key: 1),
+                    try nativeText("A", 1000, key: 0), try nativeText("é👻e\u{301}", 1050, key: 1),
                     row("key_up", 1080, key: 0), row("key_up", 1100, key: 1),
                     row("mouse_down", 2000, button: 0), row("mouse_up", 2200, button: 0),
                     row("key_down", 3000, key: 2), row("boundary", 3100, detail: "sleep_or_session_inactive"),
@@ -62,6 +79,7 @@ import RecorderCore
             "diagnostics_directory": diagnostics.path, "kept_probe_file": kept.path,
             "records_verified": rows.count, "dropped_records": snapshot.droppedRecords,
             "off_rejects_input": true, "reopen_preserves_old_session": true,
+            "native_text_payloads_exact_after_disk_read": true, "native_text_payloads_verified": 2,
             "file_mode": "0600", "directory_mode": "0700",
             "sha256": SHA256.hash(data: saved).map { String(format: "%02x", $0) }.joined()]
         let json = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
